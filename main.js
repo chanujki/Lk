@@ -5,7 +5,7 @@ const cron = require('node-cron');
 const axios = require('axios');
 const gradient = require('gradient-string');
 
-const config = require('./config.json'); // Direct JSON use
+const config = require('./config.json');
 
 require('./utils.js');
 const TelegramAdapter = require('./telegram-adapter.js');
@@ -33,8 +33,8 @@ async function fetchGbanList() {
     try {
         const response = await axios.get('https://raw.githubusercontent.com/samirxpikachuio/Gban/main/Gban.json');
         gbanList = response.data.map(user => user.ID);
-    } catch {
-        logger('⚠️ Error fetching gban list');
+    } catch (err) {
+        console.log('⚠️ Error fetching gban list:', err.message);
     }
 }
 fetchGbanList();
@@ -44,21 +44,71 @@ cron.schedule('*/5 * * * *', fetchGbanList);
 fs.readdirSync('./scripts/cmds').forEach(file => {
     if (file.endsWith('.js')) {
         try {
-            const command = require(./scripts/cmds/${file});
+            const command = require(`./scripts/cmds/${file}`);
+
+            if (!command.config) command.config = {};
             if (typeof command.config.role === 'undefined') command.config.role = 0;
             if (typeof command.config.cooldown === 'undefined') command.config.cooldown = 0;
-            commands.push({ ...command, config: { ...command.config, name: command.config.name.toLowerCase() } });
+            if (!command.config.name) command.config.name = file.replace('.js', '');
+
+            commands.push({
+                ...command,
+                config: {
+                    ...command.config,
+                    name: command.config.name.toLowerCase()
+                }
+            });
+
             registerCommand(bot, command);
+
         } catch (error) {
-            console.error(gradient.passion(❌ Error loading ${file}: ${error.message}));
+            console.error(gradient.passion(`❌ Error loading ${file}: ${error.message}`));
         }
     }
 });
 
+// Register command
 function registerCommand(bot, command) {
     const usePrefix = command.config.usePrefix !== false;
-    const prefixPattern = usePrefix ? ^${config.prefix}${command.config.name}\\b(.*)$ : ^${command.config.name}\\b(.*)$;
+
+    const prefixPattern = usePrefix
+        ? `^${config.prefix}${command.config.name}\\b(.*)$`
+        : `^${command.config.name}\\b(.*)$`;
+
     bot.onText(new RegExp(prefixPattern, 'i'), (msg, match) => {
         executeCommand(bot, command, msg, match);
     });
+}
+
+// Execute command
+async function executeCommand(bot, command, msg, match) {
+    const userId = msg.from.id;
+    const chatId = msg.chat.id;
+
+    // Global ban check
+    if (gbanList.includes(userId)) {
+        return bot.sendMessage(chatId, '🚫 You are globally banned.');
+    }
+
+    // Cooldown check
+    const now = Date.now();
+    const key = `${userId}_${command.config.name}`;
+
+    if (cooldowns.has(key)) {
+        const expire = cooldowns.get(key);
+        if (now < expire) {
+            return bot.sendMessage(chatId, `⏳ Please wait before using this command again.`);
         }
+    }
+
+    cooldowns.set(key, now + (command.config.cooldown * 1000));
+
+    try {
+        await command.run({ bot, msg, match, commands, config });
+    } catch (err) {
+        console.error(`Error executing command ${command.config.name}:`, err);
+        bot.sendMessage(chatId, '❌ Command error occurred.');
+    }
+}
+
+console.log(gradient.instagram('🌐 Server running on port 5000'));
